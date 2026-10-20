@@ -7,10 +7,14 @@ import { PrismaService } from './common/prisma.service';
 import { HealthController } from './common/health.controller';
 import { ProjectsController } from './projects/projects.controller';
 import { ProjectsService } from './projects/projects.service';
+import { RoomsController } from './rooms/rooms.controller';
+import { RoomsService } from './rooms/rooms.service';
+import { RoomsGateway } from './rooms/rooms.gateway';
+import { RoomEventsService } from './rooms/room-events.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }), JwtModule.register({ secret: process.env.JWT_SECRET, signOptions: { expiresIn: '8h' } })],
-  controllers: [AuthController, HealthController, ProjectsController],
-  providers: [AuthService, PrismaService, ProjectsService],
+  controllers: [AuthController, HealthController, ProjectsController, RoomsController],
+  providers: [AuthService, PrismaService, ProjectsService, RoomsService, RoomsGateway, RoomEventsService],
 })
 export class AppModule {}

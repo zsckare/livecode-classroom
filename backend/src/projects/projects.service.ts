@@ -1,9 +1,10 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import { RoomEventsService } from '../rooms/room-events.service';
 
 @Injectable()
 export class ProjectsService {
-  constructor(private readonly db: PrismaService) {}
+  constructor(private readonly db: PrismaService, private readonly events: RoomEventsService) {}
   private validName(value: string) {
     const name = value.trim();
     if (!name || name === '.' || name === '..' || /[\\/\x00-\x1f]/.test(name)) throw new BadRequestException('Invalid name');
@@ -52,7 +53,9 @@ export class ProjectsService {
     const name = this.validName(body.name);
     await this.checkParent(projectId, body.parentId);
     await this.checkSibling(projectId, body.parentId ?? null, name);
-    return this.db.projectNode.create({ data: { projectId, name, kind: body.kind, parentId: body.parentId ?? null } });
+    const result = await this.db.projectNode.create({ data: { projectId, name, kind: body.kind, parentId: body.parentId ?? null } });
+    this.events.publish(projectId, 'node:created', result);
+    return result;
   }
   async updateNode(ownerId: string, projectId: string, nodeId: string, body: { name?: string; content?: string; parentId?: string }) {
     await this.owned(ownerId, projectId);
@@ -72,12 +75,14 @@ export class ProjectsService {
     await this.checkSibling(projectId, parentId, name, nodeId);
     const result = await this.db.projectNode.update({ where: { id: nodeId }, data: { name, parentId, ...(body.content !== undefined ? { content: body.content } : {}) } });
     await this.db.project.update({ where: { id: projectId }, data: { updatedAt: new Date() } });
+    this.events.publish(projectId, 'node:updated', result);
     return result;
   }
   async removeNode(ownerId: string, projectId: string, nodeId: string) {
     await this.owned(ownerId, projectId);
     await this.node(projectId, nodeId);
     await this.db.projectNode.delete({ where: { id: nodeId } });
+    this.events.publish(projectId, 'node:deleted', { nodeId });
     return { ok: true };
   }
 }
