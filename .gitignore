@@ -1,0 +1,100 @@
+
+# ============================================
+# LiveCode Classroom - Git Ignore
+# ============================================
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables and secrets
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Next.js
+.next/
+**/.next/
+out/
+**/out/
+next-env.d.ts
+
+# NestJS / TypeScript
+dist/
+**/dist/
+build/
+**/build/
+*.tsbuildinfo
+
+# Testing
+coverage/
+**/coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Prisma
+# Keep schema.prisma and migrations tracked.
+# Ignore local SQLite databases if used.
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Docker
+docker-compose.override.yml
+*.pid
+
+# Temporary files
+tmp/
+temp/
+.cache/
+*.tmp
+*.temp
+
+# IDEs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.iml
+
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# Package manager caches
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+
+# Vercel
+.vercel/
+
+# Local uploads and generated files
+uploads/
+storage/
+*.zip
+
+# Security
+*.pem
+*.key
+*.p12
+*.pfx

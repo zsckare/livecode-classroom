@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: livecode
+      POSTGRES_PASSWORD: livecode_dev
+      POSTGRES_DB: livecode
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - livecode_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U livecode -d livecode"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  livecode_pgdata:
