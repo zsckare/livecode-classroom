@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { Room, SOCKET_URL, Participant } from '@/lib/rooms';
 import { io, Socket } from 'socket.io-client';
 import { Project, ProjectNode } from '@/lib/projects';
+import type { editor as MonacoEditor } from 'monaco-editor';
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 const language = (name: string) => ({ ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', json: 'json', css: 'css', html: 'html', md: 'markdown', py: 'python', java: 'java', kt: 'kotlin', sql: 'sql' }[name.split('.').pop()?.toLowerCase() ?? ''] ?? 'plaintext');
 export default function ProjectEditor({ params }: { params: Promise<{ id: string }> }) {
@@ -14,8 +15,14 @@ export default function ProjectEditor({ params }: { params: Promise<{ id: string
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const socketRef = useRef<Socket | null>(null);
+  const liveRevision = useRef(new Map<string, number>());
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const selectedRef = useRef<string | null>(null);
+  const [connection, setConnection] = useState('Sin sala');
   const [project, setProject] = useState<Project | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  selectedRef.current = selected;
+  const editQueue = useRef(new Map<string, Promise<void>>());
   const [tabs, setTabs] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<string[]>([]);
   const [error, setError] = useState('');
@@ -35,13 +42,18 @@ export default function ProjectEditor({ params }: { params: Promise<{ id: string
     if (!room) return;
     const socket = io(SOCKET_URL, { withCredentials: true, reconnection: true });
     socketRef.current = socket;
-    const join = () => socket.emit('room:join', { roomId: room.id }, (response: { ok?: boolean }) => {
-      if (!response?.ok) setError('No se pudo conectar a la sala');
+    const join = () => socket.emit('room:join', { roomId: room.id }, (response: { ok?: boolean; revisions?: Record<string, number> }) => {
+      if (!response?.ok) { setConnection('Sin acceso'); setError('No se pudo conectar a la sala'); return; }
+      setConnection('En vivo');
+      // La versión del servidor se reinicia al volver a entrar: el guardado sigue siendo la fuente persistente.
+      liveRevision.current = new Map(Object.entries(response.revisions ?? {}));
+      socket.emit('teacher:focus', { fileId: selectedRef.current });
     });
     socket.on('connect', join);
+    socket.on('disconnect', () => setConnection('Reconectando…'));
     socket.on('room:participants', (users: Participant[]) => setParticipants(users));
     socket.on('project:changed', () => {});
-    return () => { socket.disconnect(); socketRef.current = null; };
+    return () => { socket.disconnect(); socketRef.current = null; setConnection('Sin sala'); };
   }, [room]);
   useEffect(() => { if (room && socketRef.current?.connected) socketRef.current.emit('teacher:focus', { fileId: selected }); }, [room, selected]);
   async function createRoom() {
@@ -72,7 +84,25 @@ export default function ProjectEditor({ params }: { params: Promise<{ id: string
   }, [id]);
   useEffect(() => { const timer = setInterval(() => { if (dirtyRef.current.size) void save(); }, 2500); return () => clearInterval(timer); }, [save]);
   useEffect(() => { const handler = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); void save(); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [save]);
-  function updateContent(content: string | undefined) {
+  function updateContent(content: string | undefined, event?: MonacoEditor.IModelContentChangedEvent) {
+    const fileId = selectedRef.current;
+    const socket = socketRef.current;
+    if (fileId && event && socket?.connected && connection === 'En vivo') {
+      const changes = event.changes.map(c => ({ rangeOffset: c.rangeOffset, rangeLength: c.rangeLength, text: c.text }));
+      // Encolar por archivo: no enviar revisiones concurrentes con el mismo número.
+      const previous = editQueue.current.get(fileId) ?? Promise.resolve();
+      const pending = previous.catch(() => {}).then(() => new Promise<void>(resolve => {
+        if (!socket.connected) { setConnection('Reconectando…'); resolve(); return; }
+        const baseRevision = liveRevision.current.get(fileId) ?? 0;
+        socket.timeout(5000).emit('teacher:edit', { fileId, baseRevision, changes }, (error: Error | null, response?: { ok: boolean; revision: number; content?: string }) => {
+          if (error || !response?.ok) {
+            setConnection('Desincronizado: guarda y recarga la sala');
+          } else liveRevision.current.set(fileId, response.revision);
+          resolve();
+        });
+      }));
+      editQueue.current.set(fileId, pending);
+    }
     if (!selected || content === undefined || !projectRef.current) return;
     const p = { ...projectRef.current, nodes: projectRef.current.nodes?.map(n => n.id === selected ? { ...n, content } : n) };
     projectRef.current = p; setProject(p); dirtyRef.current.add(selected); setDirty([...dirtyRef.current]);
@@ -102,13 +132,19 @@ export default function ProjectEditor({ params }: { params: Promise<{ id: string
     </div>);
   }
   return <main className="h-screen flex flex-col bg-[#0d111c] text-slate-200 overflow-hidden">
-    <header className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-slate-700 bg-[#161e2e]"><div className="flex items-center gap-3 min-w-0"><Link href="/dashboard" title="Volver al dashboard" className="text-blue-400"><Code2 size={21}/></Link><span className="text-sm font-semibold truncate">{project?.name ?? 'Cargando…'}</span><span className="hidden sm:inline text-xs text-slate-500">/ Editor</span></div><div className="flex items-center gap-3">{room ? <div className="flex items-center gap-2 text-xs"><span className="text-green-400">Sala {room.code}</span><button onClick={() => navigator.clipboard.writeText(`${window.location.origin}/join?code=${room.code}`)} className="underline">Copiar enlace</button><span>{participants.length} conectados</span><button onClick={closeRoom} className="text-red-300">Cerrar sala</button></div> : <button onClick={createRoom} className="rounded border border-blue-500 px-2 py-1 text-xs">Iniciar clase</button>}<span className="text-xs text-slate-400">{saving ? 'Guardando…' : dirty.length ? 'Sin guardar' : 'Guardado'}</span><button onClick={() => void save()} className="flex items-center gap-2 rounded bg-blue-600 hover:bg-blue-500 px-3 py-1.5 text-xs"><Save size={14}/> Guardar</button></div></header>
+    <header className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-slate-700 bg-[#161e2e]"><div className="flex items-center gap-3 min-w-0"><Link href="/dashboard" title="Volver al dashboard" className="text-blue-400"><Code2 size={21}/></Link><span className="text-sm font-semibold truncate">{project?.name ?? 'Cargando…'}</span><span className="hidden sm:inline text-xs text-slate-500">/ Editor</span></div><div className="flex items-center gap-3">{room ? <div className="flex items-center gap-2 text-xs"><span className="text-green-400">Sala {room.code}</span><button onClick={() => navigator.clipboard.writeText(`${window.location.origin}/join?code=${room.code}`)} className="underline">Copiar enlace</button><span>{participants.length} conectados</span><span className="text-cyan-300">{connection}</span><button onClick={closeRoom} className="text-red-300">Cerrar sala</button></div> : <button onClick={createRoom} className="rounded border border-blue-500 px-2 py-1 text-xs">Iniciar clase</button>}<span className="text-xs text-slate-400">{saving ? 'Guardando…' : dirty.length ? 'Sin guardar' : 'Guardado'}</span><button onClick={() => void save()} className="flex items-center gap-2 rounded bg-blue-600 hover:bg-blue-500 px-3 py-1.5 text-xs"><Save size={14}/> Guardar</button></div></header>
     {error && <div role="alert" className="px-4 py-2 text-xs bg-red-950 text-red-300">{error} <button onClick={() => setError('')} className="ml-3 underline">Cerrar</button></div>}
     <div className="flex flex-1 min-h-0">
       {sidebar && <aside style={{ width }} className="shrink-0 bg-[#172033] border-r border-slate-700 flex flex-col min-w-[180px]"><div className="h-10 px-3 flex items-center justify-between text-xs font-bold text-slate-400"><span>EXPLORADOR</span><div className="flex gap-3"><button title="Nuevo archivo" onClick={() => add('FILE')}><FilePlus2 size={16}/></button><button title="Nueva carpeta" onClick={() => add('FOLDER')}><FolderPlus size={16}/></button></div></div><div className="overflow-auto flex-1">{renderTree(null)}</div></aside>}
       {sidebar && <div role="separator" aria-label="Redimensionar explorador" className="w-1 cursor-col-resize hover:bg-blue-500" onPointerDown={e => { const startX = e.clientX, start = width; const move = (event: PointerEvent) => setWidth(Math.max(180, Math.min(520, start + event.clientX - startX))); const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); }; window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); }}/>} 
       <section className="flex flex-col min-w-0 flex-1"><div className="h-10 flex items-center border-b border-slate-700 bg-[#141c2a]"><button title="Mostrar/ocultar explorador" className="px-3 text-slate-400" onClick={() => setSidebar(v => !v)}>{sidebar ? <PanelLeftClose size={16}/> : <PanelLeftOpen size={16}/>}</button><div className="flex overflow-x-auto flex-1">{tabs.map(tabId => { const n = nodes.find(x => x.id === tabId); if (!n) return null; return <div key={tabId} className={`flex items-center border-r border-slate-700 text-xs ${selected === tabId ? 'bg-[#0d111c]' : 'bg-[#202b3d]'}`}><button onClick={() => setSelected(tabId)} className="px-3 py-3 whitespace-nowrap">{n.name}{dirty.includes(tabId) ? ' ●' : ''}</button><button title="Cerrar pestaña" className="pr-2 text-slate-400" onClick={() => { const next = tabs.filter(x => x !== tabId); setTabs(next); if (selected === tabId) setSelected(next.at(-1) ?? null); }}><X size={13}/></button></div>; })}</div></div>
-      <div className="flex-1 min-h-0">{current ? <Editor key={current.id} height="100%" theme="vs-dark" path={current.name} language={language(current.name)} value={current.content} onChange={updateContent} options={{ minimap: { enabled: true }, fontSize: 14, automaticLayout: true, wordWrap: 'on', scrollBeyondLastLine: false }}/>: <div className="h-full flex flex-col items-center justify-center gap-3 text-slate-500"><Code2 size={48}/><p>Selecciona un archivo o crea uno nuevo.</p></div>}</div></section>
-    </div><footer className="h-6 px-4 flex items-center justify-between bg-blue-700 text-xs"><span>LiveCode Classroom · Sprint 3</span><span>{current ? language(current.name) : 'Sin archivo'} · {nodes.length} elementos</span></footer>
+      <div className="flex-1 min-h-0">{current ? <Editor key={current.id} height="100%" theme="vs-dark" path={current.name} language={language(current.name)} value={current.content} onChange={updateContent} onMount={editor => {
+        editorRef.current = editor;
+        editor.onDidChangeCursorPosition(e => {
+          const fileId = selectedRef.current;
+          if (fileId && socketRef.current?.connected) socketRef.current.emit('teacher:cursor', { fileId, lineNumber: e.position.lineNumber, column: e.position.column });
+        });
+      }} options={{ minimap: { enabled: true }, fontSize: 14, automaticLayout: true, wordWrap: 'on', scrollBeyondLastLine: false }}/>: <div className="h-full flex flex-col items-center justify-center gap-3 text-slate-500"><Code2 size={48}/><p>Selecciona un archivo o crea uno nuevo.</p></div>}</div></section>
+    </div><footer className="h-6 px-4 flex items-center justify-between bg-blue-700 text-xs"><span>LiveCode Classroom · Sprint 4</span><span>{current ? language(current.name) : 'Sin archivo'} · {nodes.length} elementos</span></footer>
   </main>;
 }
